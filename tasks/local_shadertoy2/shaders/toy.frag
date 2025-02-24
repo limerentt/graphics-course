@@ -1,14 +1,19 @@
 #version 430
 
-layout(local_size_x = 8, local_size_y = 8) in;
+// layout(local_size_x = 8, local_size_y = 8) in;
 
-layout(binding = 0, rgba8) uniform image2D resultImage;
+// layout(binding = 0, rgba8) uniform image2D resultImage;
+
+layout(binding = 0) uniform sampler2D iChannel0;
+layout(binding = 1) uniform sampler2D iChannel1;
 
 layout(push_constant) uniform params_t
 {
   vec2 iResolution;
   float iTime;
 } consts;
+
+layout(location = 0) out vec4 out_fragColor;
 
 // From Inigo Quilez: https://iquilezles.org/articles/distfunctions/
 float sdCappedCylinder( vec3 p, float h, float r )
@@ -55,12 +60,49 @@ float sdVesicaSegment( in vec3 p, in vec3 a, in vec3 b, in float w )
     return length(q-h.xy) - h.z;
 }
 
+float justSDF(in vec3 point) {
+    // sorry for copypasta
+    const int n = 5;
+    float SDFs[n];
+    SDFs[0] = sdPyramid(point - vec3(0, -0.5, 2), 1.0) - 0.05;
+    
+    SDFs[1] = sdCappedCylinder(point - vec3(0, 0.75, 2), 0.2, 0.1) - 0.01;
+    
+    SDFs[2] = sdCappedCylinder(point - vec3(0, 0.55, 2), 0.01, 0.2) - 0.01;
+    
+    vec3 eye = vec3(0, -0.15, 1.5);
+    SDFs[3] = sdVesicaSegment(point, eye + vec3(-0.2, 0, 0), eye + vec3(+0.2, 0, 0), 0.12) - 0.01;
+    
+    SDFs[4] = sdVesicaSegment(point, eye + vec3(0, -0.08, -0.14), eye + vec3(0, +0.1, -0.14), 0.025) - 0.01;
+    
+    float sdf = SDFs[0];
+    for (int i = 0; i < n; i++) {
+        if (sdf > SDFs[i]) {
+            sdf = SDFs[i];
+        }
+    }
+    
+    return sdf;
+}
+
+vec3 normal(in vec3 p) {
+    float h = 0.01;
+    float dfdx = (justSDF(p + vec3(h, 0.0, 0.0)) - justSDF(p - vec3(h, 0.0, 0.0))) / (2.0 * h);
+    float dfdy = (justSDF(p + vec3(0.0, h, 0.0)) - justSDF(p - vec3(0.0, h, 0.0))) / (2.0 * h);
+    float dfdz = (justSDF(p + vec3(0.0, 0.0, h)) - justSDF(p - vec3(0.0, 0.0, h))) / (2.0 * h);
+    
+    return normalize(vec3(dfdx, dfdy, dfdz));
+}
+
 void calcSDF(in vec3 point, out float sdf, out vec4 col) {
     const int n = 5;
     float SDFs[n];
     vec4 colors[n];
     SDFs[0] = sdPyramid(point - vec3(0, -0.5, 2), 1.0) - 0.05;
-    colors[0] = vec4(1, 1, 0.2, 1);
+    vec3 nrm = abs(normal(point));
+    colors[0] = texture(iChannel1, (point.xy + vec2(1)) / 2.0) * nrm.z +
+    texture(iChannel1, (point.xz + vec2(1)) / 2.0) * nrm.y / 3.0 +
+    texture(iChannel1, (point.yz + vec2(1)) / 2.0) * nrm.x / 3.0;
     
     SDFs[1] = sdCappedCylinder(point - vec3(0, 0.75, 2), 0.2, 0.1) - 0.01;
     colors[1] = vec4(0.05, 0.05, 0.05, 1);
@@ -85,22 +127,6 @@ void calcSDF(in vec3 point, out float sdf, out vec4 col) {
     }
 }
 
-float justSDF(in vec3 point) {
-    float result;
-    vec4 col;
-    calcSDF(point, result, col);
-    return result;
-}
-
-vec3 normal(in vec3 p) {
-    float h = 0.01;
-    float dfdx = (justSDF(p + vec3(h, 0.0, 0.0)) - justSDF(p - vec3(h, 0.0, 0.0))) / (2.0 * h);
-    float dfdy = (justSDF(p + vec3(0.0, h, 0.0)) - justSDF(p - vec3(0.0, h, 0.0))) / (2.0 * h);
-    float dfdz = (justSDF(p + vec3(0.0, 0.0, h)) - justSDF(p - vec3(0.0, 0.0, h))) / (2.0 * h);
-    
-    return normalize(vec3(dfdx, dfdy, dfdz));
-}
-
 bool castRay(in vec2 uv, inout vec4 surfCol, inout vec3 point) {
     vec3 ray = normalize(vec3(uv, 1));
     point = vec3(0);
@@ -122,25 +148,25 @@ bool castRay(in vec2 uv, inout vec4 surfCol, inout vec3 point) {
 
 void main()
 {
-    vec2 uv = (gl_GlobalInvocationID.xy - consts.iResolution / 2.0) / min(consts.iResolution.x, consts.iResolution.y);
+    vec2 uv = (gl_FragCoord.xy - consts.iResolution / 2.0) / min(consts.iResolution.x, consts.iResolution.y);
     uv.y = -uv.y;
 
     vec4 surfCol;
     vec3 impactPoint;
     vec4 ambient, diffuse, specular;
     if (castRay(uv, surfCol, impactPoint)) {
-        ambient = vec4(0.6, 0.6, 0.6, 1.0) * surfCol;
+        ambient = vec4(0.6, 0.6, 0.6, 1.0) * surfCol / 2.0;
         
         vec3 nrm = normal(impactPoint);
-        float intensity = max(dot(nrm, vec3(-1, 1, -1)), 0.0) / 4.0;
+        float intensity = max(dot(nrm, vec3(-1, 1, -1)), 0.0) / 2.0;
         diffuse = intensity * surfCol;
         
-        vec3 reflected = reflect(vec3(-1, -1, sin(consts.iTime)), nrm);
-        specular = vec4(pow(max(dot(vec3(uv, 1), -reflected), 0.0), 4.0)) / 5.0;
+        vec3 reflected = reflect(vec3(-1, -1, sin(consts.iTime) / 2.0), nrm);
+        specular = vec4(pow(max(dot(vec3(uv, 1), -reflected), 0.0), 10.0)) / 17.0;
     } else {
-        ambient = surfCol;
+        ambient = texture(iChannel0, uv);
         diffuse = vec4(0);
         specular = vec4(0);
     }
-    imageStore(resultImage, ivec2(gl_GlobalInvocationID.xy), ambient + diffuse + specular);
+    out_fragColor = ambient + diffuse + specular;
 }
