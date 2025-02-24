@@ -4,9 +4,11 @@
 
 #include <etna/Window.hpp>
 #include <etna/PerFrameCmdMgr.hpp>
-#include <etna/ComputePipeline.hpp>
+#include <etna/GraphicsPipeline.hpp>
 #include <etna/Image.hpp>
 #include <etna/Sampler.hpp>
+#include <etna/BlockingTransferHelper.hpp>
+#include <etna/GpuSharedResource.hpp>
 
 #include "wsi/OsWindowingManager.hpp"
 
@@ -33,7 +35,9 @@ private:
 
   std::unique_ptr<etna::Window> vkWindow;
   std::unique_ptr<etna::PerFrameCmdMgr> commandManager;
-  etna::ComputePipeline pipe;
-  etna::Image img;
+  std::unique_ptr<etna::OneShotCmdMgr> oneShotManager;
+  etna::GraphicsPipeline mainPipe, texturePipe;
+  etna::Image imgFile, imgGen;
   etna::Sampler samp;
+  std::optional<etna::GpuSharedResource<etna::Buffer>> constsUniformBuffers;
 };
