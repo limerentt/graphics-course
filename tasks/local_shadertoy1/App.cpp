@@ -11,6 +11,9 @@ App::App()
 {
   // First, we need to initialize Vulkan, which is not trivial because
   // extensions are required for just about anything.
+
+  start_clock = std::clock();
+
   {
     // GLFW tells us which extensions it needs to present frames to the OS window.
     // Actually rendering anything to a screen is optional in Vulkan, you can
@@ -73,8 +76,15 @@ App::App()
   // How it is actually performed is not trivial, but we can skip this for now.
   commandManager = etna::get_context().createPerFrameCmdMgr();
 
-
-  // TODO: Initialize any additional resources you require here!
+  samp = etna::Sampler(etna::Sampler::CreateInfo{.name = "samp"});
+  img = etna::get_context().createImage(etna::Image::CreateInfo{
+    .extent = vk::Extent3D{resolution.x, resolution.y, 1},
+    .name = "resultImage",
+    .format = vk::Format::eR8G8B8A8Snorm,
+    .imageUsage = vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eStorage,
+  });
+  etna::create_program("program", {LOCAL_SHADERTOY1_SHADERS_ROOT "toy.comp.spv"});
+  pipe = etna::get_context().getPipelineManager().createComputePipeline("program", {});
 }
 
 App::~App()
@@ -135,11 +145,68 @@ void App::drawFrame()
       // As with set_state, Etna sometimes flushes on it's own.
       // Usually, flushes should be placed before "action", i.e. compute dispatches
       // and blit/copy operations.
+
+
       etna::flush_barriers(currentCmdBuf);
 
-
       // TODO: Record your commands here!
+      etna::ShaderProgramInfo shaderProgramInfo = etna::get_shader_program("program");
+      vk::DescriptorSet vkSet = etna::create_descriptor_set(
+        shaderProgramInfo.getDescriptorLayoutId(0),
+        currentCmdBuf,
+        {
+          etna::Binding{0, img.genBinding(samp.get(), vk::ImageLayout::eGeneral)},
+        }
+      ).getVkSet();
 
+      currentCmdBuf.bindPipeline(vk::PipelineBindPoint::eCompute, pipe.getVkPipeline());
+      currentCmdBuf.bindDescriptorSets(
+        vk::PipelineBindPoint::eCompute, pipe.getVkPipelineLayout(), 0, 1, &vkSet, 0, nullptr);
+
+      etna::flush_barriers(currentCmdBuf);
+
+      std::clock_t clk_now = std::clock();
+      struct {
+        glm::vec2 res;
+        float duration;
+      } pushConsts;
+      pushConsts.duration = static_cast<float>(clk_now - start_clock) / CLOCKS_PER_SEC;
+      pushConsts.res = resolution;
+      currentCmdBuf.pushConstants(
+          pipe.getVkPipelineLayout(),
+          vk::ShaderStageFlagBits::eCompute,
+          0,
+          sizeof(pushConsts),
+          &pushConsts);
+
+      currentCmdBuf.dispatch(resolution.x / 8, resolution.y / 8, 1);
+
+      etna::set_state(
+        currentCmdBuf,
+        img.get(),
+        vk::PipelineStageFlagBits2::eTransfer,
+        vk::AccessFlagBits2::eTransferRead,
+        vk::ImageLayout::eTransferSrcOptimal,
+        vk::ImageAspectFlagBits::eColor);
+
+      etna::flush_barriers(currentCmdBuf);
+
+      vk::ImageBlit blit = {
+        vk::ImageSubresourceLayers( vk::ImageAspectFlagBits::eColor, 0, 0, 1 ),
+        {{ vk::Offset3D( 0, 0, 0 ), vk::Offset3D( resolution.x, resolution.y, 1 ) }},
+        vk::ImageSubresourceLayers( vk::ImageAspectFlagBits::eColor, 0, 0, 1 ),
+        {{ vk::Offset3D( 0, 0, 0 ), vk::Offset3D( resolution.x, resolution.y, 1 ) }}
+      };
+      
+      currentCmdBuf.blitImage(
+        img.get(),
+        vk::ImageLayout::eTransferSrcOptimal,
+        backbuffer,
+        vk::ImageLayout::eTransferDstOptimal,
+        1,
+        &blit,
+        vk::Filter::eNearest
+      );
 
       // At the end of "rendering", we are required to change how the pixels of the
       // swpchain image are laid out in memory to something that is appropriate
